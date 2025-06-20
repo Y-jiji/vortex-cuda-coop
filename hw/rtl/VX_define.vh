@@ -113,9 +113,28 @@
 
 // Custom extension opcodes
 `define INST_EXT1       7'b0001011 // 0x0B
-`define INST_EXT2       7'b0101011 // 0x2B
-`define INST_EXT3       7'b1011011 // 0x5B
-`define INST_EXT4       7'b1111011 // 0x7B
+// `define INST_EXT2       7'b0101011 // 0x2B
+// `define INST_EXT3       7'b1011011 // 0x5B
+// `define INST_EXT4       7'b1111011 // 0x7B
+
+// CUDA Vote Extension
+`define INST_VOTE       7'b0101011 // 0x2B
+`define INST_SHFL       7'b1011011 // 0x5B
+`define INST_TILE       7'b1111011 // 0x7B
+
+`define VOTE_ALL        4'b0000
+`define VOTE_ANY        4'b0001
+`define VOTE_UNI        4'b0010
+`define VOTE_BALLOT     4'b0011
+
+`define SHFL_BFLY       4'b0100
+`define SHFL_UP         4'b0101
+`define SHFL_DOWN       4'b0110
+`define SHFL_IDX        4'b0111
+
+`define VOTE_NONE       4'b1000
+`define VOTE_NOT_ALL    4'b1001
+
 
 // Opcode extensions
 `define INST_R_F7_MUL   7'b0000001
@@ -259,6 +278,7 @@
 `define INST_SFU_CSRRW       4'h6
 `define INST_SFU_CSRRS       4'h7
 `define INST_SFU_CSRRC       4'h8
+`define INST_SFU_TILE        4'h9
 `define INST_SFU_BITS        4
 `define INST_SFU_CSR(f3)     (4'h6 + 4'(f3) - 4'h1)
 `define INST_SFU_IS_WCTL(op) (op <= 5)

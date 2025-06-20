@@ -30,6 +30,20 @@
 
 using namespace vortex;
 
+// #define DEFAULT
+#define GROUPS
+
+Emulator::ipdom_entry_t::ipdom_entry_t(const ThreadMask &tmask, Word PC)
+  : tmask(tmask)
+  , PC(PC)
+  , fallthrough(false)
+{}
+
+Emulator::ipdom_entry_t::ipdom_entry_t(const ThreadMask &tmask)
+  : tmask(tmask)
+  , fallthrough(true)
+{}
+
 Emulator::warp_t::warp_t(const Arch& arch)
   : ireg_file(arch.num_threads(), std::vector<Word>(MAX_NUM_REGS))
   , freg_file(arch.num_threads(), std::vector<uint64_t>(MAX_NUM_REGS))
@@ -44,6 +58,8 @@ void Emulator::warp_t::clear(uint64_t startup_addr) {
   this->tmask.reset();
   this->uuid = 0;
   this->fcsr = 0;
+  this->num_tThreads = WARP_SIZE;
+  this->isActive = false;
 
   for (auto& reg_file : this->ireg_file) {
     for (auto& reg : reg_file) {
@@ -88,7 +104,12 @@ Emulator::Emulator(const Arch &arch, const DCRS &dcrs, Core* core)
     : arch_(arch)
     , dcrs_(dcrs)
     , core_(core)
+#ifdef DEFAULT
     , warps_(arch.num_warps(), arch)
+#endif
+#ifdef GROUPS
+    , warps_(MAX_NUMBER_TILES, arch)
+#endif
     , barriers_(arch.num_barriers(), 0)
     , ipdom_size_(arch.num_threads()-1)
     // [TBC] Currently, tradeoff between scratchpad size & performance has not been evaluated. Scratchpad is
@@ -138,9 +159,10 @@ void Emulator::clear() {
   stalled_warps_.reset();
   active_warps_.reset();
 
-  // activate first warp and thread
+  //activate first warp and thread
   active_warps_.set(0);
   warps_[0].tmask.set(0);
+  warps_[0].isActive = true;
   wspawn_.valid = false;
 
   for (auto& reg : scratchpad) {
@@ -157,10 +179,10 @@ void Emulator::attach_ram(RAM* ram) {
 #endif
 }
 
+
 instr_trace_t* Emulator::step() {
   int scheduled_warp = -1;
-
-  // process pending wspawn
+  // ----- process pending wspawn
   if (wspawn_.valid && active_warps_.count() == 1) {
     DP(3, "*** Activate " << (wspawn_.num_warps-1) << " warps at PC: " << std::hex << wspawn_.nextPC << std::dec);
     for (uint32_t i = 1; i < wspawn_.num_warps; ++i) {
@@ -173,19 +195,19 @@ instr_trace_t* Emulator::step() {
     stalled_warps_.reset(0);
   }
 
-  // find next ready warp
+  //----- find next ready warp
   for (size_t wid = 0, nw = arch_.num_warps(); wid < nw; ++wid) {
     bool warp_active = active_warps_.test(wid);
     bool warp_stalled = stalled_warps_.test(wid);
     if (warp_active && !warp_stalled) {
-      scheduled_warp = wid;
+      scheduled_warp = wid;    
       break;
     }
   }
   if (scheduled_warp == -1)
     return nullptr;
 
-  // suspend warp until decode
+  //----- suspend warp until decode
   auto& warp = warps_.at(scheduled_warp);
   assert(warp.tmask.any());
 
@@ -201,12 +223,12 @@ instr_trace_t* Emulator::step() {
   DP(1, "Fetch: cid=" << core_->id() << ", wid=" << scheduled_warp << ", tmask=" << ThreadMaskOS(warp.tmask, arch_.num_threads())
          << ", PC=0x" << std::hex << warp.PC << " (#" << std::dec << uuid << ")");
 
-  // Fetch
   uint32_t instr_code = 0;
   this->icache_read(&instr_code, warp.PC, sizeof(uint32_t));
 
-  // Decode
+//-----  Decode
   auto instr = this->decode(instr_code);
+
   if (!instr) {
     std::cout << "Error: invalid instruction 0x" << std::hex << instr_code << ", at PC=0x" << warp.PC << " (#" << std::dec << uuid << ")" << std::endl;
     std::abort();
@@ -214,12 +236,22 @@ instr_trace_t* Emulator::step() {
 
   DP(1, "Instr 0x" << std::hex << instr_code << ": " << std::dec << *instr);
 
-  // Create trace
+  //-----  Create trace
   auto trace = new instr_trace_t(uuid, arch_);
-
-  // Execute
+  //-----  Execute
+#ifdef DEFAULT
   this->execute(*instr, scheduled_warp, trace);
+#endif
+#ifdef GROUPS 
+  for (size_t wid = 0, nw = MAX_NUMBER_TILES; wid < nw; ++wid) {
+    if (warps_[wid].isActive) {
+      DP(5, "EXECUTING Group ID:"<<wid);
+      this->execute(*instr, wid, trace);
+    }
+  }
+#endif
 
+#ifdef DEFAULT
   DP(5, "Register state:");
   for (uint32_t i = 0; i < MAX_NUM_REGS; ++i) {
     DPN(5, "  %r" << std::setfill('0') << std::setw(2) << i << ':' << std::hex);
@@ -228,14 +260,32 @@ instr_trace_t* Emulator::step() {
       DPN(5, ' ' << std::setfill('0') << std::setw(XLEN/4) << warp.ireg_file.at(j).at(i) << std::setfill(' ') << ' ');
     }
     DPN(5, '|');
-    // Floating point register file
+    //-----  Floating point register file
     for (uint32_t j = 0; j < arch_.num_threads(); ++j) {
       DPN(5, ' ' << std::setfill('0') << std::setw(16) << warp.freg_file.at(j).at(i) << std::setfill(' ') << ' ');
     }
     DPN(5, std::dec << std::endl);
   }
-
   return trace;
+#endif
+
+#ifdef GROUPS
+  DP(5, "Register state:");
+  for (uint32_t i = 0; i < arch_.num_regs(); ++i) {
+    DPN(5, "  %r" << std::setfill('0') << std::setw(2) << std::dec << i << ':');
+    //-----  Integer register file
+    for (uint32_t j = 0; j < WARP_SIZE; ++j) {
+      DPN(5, ' ' << std::setfill('0') << std::setw(XLEN/4) << std::hex << warps_[j/THREAD_PER_TILE].ireg_file.at(j%THREAD_PER_TILE).at(i) << std::setfill(' ') << ' ');
+    }
+    DPN(5, '|');
+    //-----  Floating point register file
+    for (uint32_t j = 0; j < arch_.num_threads(); ++j) {
+      DPN(5, ' ' << std::setfill('0') << std::setw(16) << std::hex << warps_[j/THREAD_PER_TILE].freg_file.at(j%THREAD_PER_TILE).at(i) << std::setfill(' ') << ' ');
+    }
+    DPN(5, std::endl);
+  }
+  return trace;
+#endif
 }
 
 bool Emulator::running() const {
@@ -270,7 +320,32 @@ bool Emulator::wspawn(uint32_t num_warps, Word nextPC) {
   return false;
 }
 
+bool Emulator::tileMask(uint32_t tile_mask, uint32_t thread_count){
+  int wid = 0;
+  bool reset = ~(tile_mask >> 31);
+  for(int i = MAX_NUMBER_TILES - 1 ; i >= 0 ; i--){
+    auto mask = (tile_mask >> i) & 0x01;
+    if(reset){
+      warps_[MAX_NUMBER_TILES - i -1].isActive = mask;
+    }
+    if(mask){
+      wid = MAX_NUMBER_TILES - i - 1;
+      if(!reset){
+        warps_[wid].isActive = mask;
+      }
+      warps_[wid].PC = warps_[0].PC;
+      warps_[wid].tmask.reset();
+      for (int j = 0; j < (int)thread_count; j++){
+        warps_[wid].tmask[j] = 1; 
+      }
+      warps_[wid].num_tThreads = thread_count;
+    }
+  }
+  return true;
+}
+
 bool Emulator::barrier(uint32_t bar_id, uint32_t count, uint32_t wid) {
+#ifdef DEFAULT
   if (count < 2)
     return true;
 
@@ -301,6 +376,36 @@ bool Emulator::barrier(uint32_t bar_id, uint32_t count, uint32_t wid) {
     }
   }
   return false;
+#endif
+
+#ifdef GROUPS
+  // Here we require count to be a mask of groups to stall
+
+  if (count < 2)
+    return true;
+
+  uint32_t bar_idx = bar_id & 0x7fffffff;
+
+  auto& barrier = barriers_.at(bar_idx);
+  if (warps_[wid].isActive) {
+    barrier.set(wid);
+    DP(3, "*** Suspend core #" << core_->id() << ", warp #" << wid << " at barrier #" << bar_idx);
+  }
+
+  
+  if (barrier.count() == (size_t)count) {
+    // resume suspended warps
+    for (uint32_t i = 0; i < MAX_NUMBER_TILES; ++i) {
+      if (barrier.test(i)) {
+        DP(3, "*** Resume core #" << core_->id() << ", warp #" << i << " at barrier #" << bar_idx);
+        warps_[i].isActive = true;
+      }
+    }
+    stalled_warps_.reset(0);
+    barrier.reset();
+  }
+  return false;
+#endif
 }
 
 #ifdef VM_ENABLE

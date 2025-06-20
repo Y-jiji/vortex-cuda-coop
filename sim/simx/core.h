@@ -111,6 +111,8 @@ public:
 
   bool wspawn(uint32_t num_warps, Word nextPC);
 
+  bool tileMask(uint32_t tile_mask, uint32_t thread_count);
+
   uint32_t id() const {
     return core_id_;
   }

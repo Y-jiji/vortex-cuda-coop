@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+
 #include <iostream>
 #include <stdlib.h>
 #include <unistd.h>
@@ -30,6 +31,9 @@
 #endif
 #include "VX_types.h"
 
+// #define DEFAULT
+#define GROUPS
+
 using namespace vortex;
 
 inline uint64_t nan_box(uint32_t value) {
@@ -47,19 +51,38 @@ inline int64_t check_boxing(int64_t a) {
 }
 
 void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
+#ifdef DEFAULT
   auto& warp = warps_.at(wid);
   assert(warp.tmask.any());
+#endif
+#ifdef GROUPS
+  auto& warp = warps_;
+  assert(warp[wid].tmask.any());
+#endif
 
   // initialize instruction trace
   trace->cid   = core_->id();
+  
+#ifdef DEFAULT
   trace->wid   = wid;
   trace->PC    = warp.PC;
   trace->tmask = warp.tmask;
-  trace->dst_reg = {instr.getRDType(), instr.getRDest()};
-
+#endif
+#ifdef GROUPS
+  trace->wid   = 0;
+  trace->PC    = warp[wid].PC;
+  trace->tmask = warp[wid].tmask;
+#endif
+  trace->rdest = instr.getRDest();
+  trace->rdest_type = instr.getRDType();
+#ifdef DEFAULT
   auto next_pc = warp.PC + 4;
   auto next_tmask = warp.tmask;
-
+#endif
+#ifdef GROUPS
+  auto next_pc = warp[wid].PC + 4;
+  auto next_tmask = warp[wid].tmask;
+#endif
   auto opcode = instr.getOpcode();
   auto func2  = instr.getFunc2();
   auto func3  = instr.getFunc3();
@@ -69,21 +92,36 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
   auto rsrc1  = instr.getRSrc(1);
   auto rsrc2  = instr.getRSrc(2);
   auto immsrc = sext((Word)instr.getImm(), 32);
-
+#ifdef DEFAULT
   auto num_threads = arch_.num_threads();
-
   uint32_t thread_start = 0;
+#endif
+#ifdef GROUPS
+  auto num_threads = warp[wid].num_tThreads;
+  uint32_t thread_start = 0;
+#endif
   for (; thread_start < num_threads; ++thread_start) {
+#ifdef DEFAULT
       if (warp.tmask.test(thread_start))
         break;
+#endif
+#ifdef GROUPS
+      if (warp[wid].tmask.test(thread_start))
+        break;
+#endif
   }
 
   int32_t thread_last = num_threads - 1;
   for (; thread_last >= 0; --thread_last) {
+#ifdef DEFAULT
       if (warp.tmask.test(thread_last))
         break;
+#endif
+#ifdef GROUPS
+      if (warp[wid].tmask.test(thread_last))
+        break;
+#endif
   }
-
   std::vector<reg_data_t[3]> rsdata(num_threads);
   std::vector<reg_data_t> rddata(num_threads);
 
@@ -97,12 +135,25 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         DPH(2, "Src" << i << " Reg: " << type << reg << "={");
         for (uint32_t t = 0; t < num_threads; ++t) {
           if (t) DPN(2, ", ");
+#ifdef DEFAULT
           if (!warp.tmask.test(t)) {
+            DPN(2, "-");
+              continue;
+           }
+#endif
+#ifdef GROUPS
+          if (!warp[wid].tmask.test(t)) {
             DPN(2, "-");
             continue;
           }
+#endif
+#ifdef DEFAULT
           rsdata[t][i].u = warp.ireg_file.at(t)[reg];
-          DPN(2, "0x" << std::hex << rsdata[t][i].i << std::dec);
+#endif
+#ifdef GROUPS
+          rsdata[t][i].u = warp[wid + t/THREAD_PER_TILE].ireg_file.at(t%THREAD_PER_TILE)[reg];
+#endif
+          DPN(2, "0x" << std::hex << rsdata[t][i].i);
         }
         DPN(2, "}" << std::endl);
         break;
@@ -110,12 +161,25 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         DPH(2, "Src" << i << " Reg: " << type << reg << "={");
         for (uint32_t t = 0; t < num_threads; ++t) {
           if (t) DPN(2, ", ");
+#ifdef DEFAULT
           if (!warp.tmask.test(t)) {
             DPN(2, "-");
             continue;
           }
+#endif
+#ifdef GROUPS
+          if (!warp[wid].tmask.test(t)) {
+            DPN(2, "-");
+            continue;
+          }
+#endif
+#ifdef DEFAULT
           rsdata[t][i].u64 = warp.freg_file.at(t)[reg];
-          DPN(2, "0x" << std::hex << rsdata[t][i].f << std::dec);
+#endif
+#ifdef GROUPS
+          rsdata[t][i].u64 = warp[wid + t/THREAD_PER_TILE].freg_file.at(t%THREAD_PER_TILE)[reg];
+#endif
+          DPN(2, "0x" << std::hex << rsdata[t][i].f);
         }
         DPN(2, "}" << std::endl);
         break;
@@ -130,15 +194,20 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
   }
 
   bool rd_write = false;
-
   switch (opcode) {
   case Opcode::LUI: {
     // RV32I: LUI
     trace->fu_type = FUType::ALU;
     trace->alu_type = AluType::ARITH;
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       rddata[t].i = immsrc;
     }
     rd_write = true;
@@ -149,9 +218,20 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->fu_type = FUType::ALU;
     trace->alu_type = AluType::ARITH;
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
+#ifdef DEFAULT
       rddata[t].i = immsrc + warp.PC;
+#endif
+#ifdef GROUPS
+      rddata[t].i = immsrc + warp[wid].PC;
+#endif
     }
     rd_write = true;
     break;
@@ -162,8 +242,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->src_regs[0] = {RegType::Integer, rsrc0};
     trace->src_regs[1] = {RegType::Integer, rsrc1};
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       if (func7 == 0x7) {
         auto value = rsdata[t][0].i;
         auto cond = rsdata[t][1].i;
@@ -338,8 +424,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->alu_type = AluType::ARITH;
     trace->src_regs[0] = {RegType::Integer, rsrc0};
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       switch (func3) {
       case 0: {
         // RV32I: ADDI
@@ -399,8 +491,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->src_regs[0] = {RegType::Integer, rsrc0};
     trace->src_regs[1] = {RegType::Integer, rsrc1};
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       if (func7 & 0x1) {
         switch (func3) {
           case 0: {
@@ -525,8 +623,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->alu_type = AluType::ARITH;
     trace->src_regs[0] = {RegType::Integer, rsrc0};
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       switch (func3) {
         case 0: {
           // RV64I: ADDIW
@@ -570,14 +674,25 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->src_regs[1] = {RegType::Integer, rsrc1};
     bool all_taken = false;
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       bool curr_taken = false;
       switch (func3) {
       case 0: {
         // RV32I: BEQ
         if (rsdata[t][0].i == rsdata[t][1].i) {
+#ifdef DEFAULT
           next_pc = warp.PC + immsrc;
+#endif
+#ifdef GROUPS
+          next_pc = warp[wid].PC + immsrc;
+#endif
           curr_taken = true;
         }
         break;
@@ -585,7 +700,12 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       case 1: {
         // RV32I: BNE
         if (rsdata[t][0].i != rsdata[t][1].i) {
+#ifdef DEFAULT
           next_pc = warp.PC + immsrc;
+#endif
+#ifdef GROUPS
+          next_pc = warp[wid].PC + immsrc;
+#endif
           curr_taken = true;
         }
         break;
@@ -593,7 +713,12 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       case 4: {
         // RV32I: BLT
         if (rsdata[t][0].i < rsdata[t][1].i) {
+#ifdef DEFAULT
           next_pc = warp.PC + immsrc;
+#endif
+#ifdef GROUPS
+          next_pc = warp[wid].PC + immsrc;
+#endif
           curr_taken = true;
         }
         break;
@@ -601,7 +726,12 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       case 5: {
         // RV32I: BGE
         if (rsdata[t][0].i >= rsdata[t][1].i) {
+#ifdef DEFAULT
           next_pc = warp.PC + immsrc;
+#endif
+#ifdef GROUPS
+          next_pc = warp[wid].PC + immsrc;
+#endif          
           curr_taken = true;
         }
         break;
@@ -609,7 +739,12 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       case 6: {
         // RV32I: BLTU
         if (rsdata[t][0].u < rsdata[t][1].u) {
+#ifdef DEFAULT          
           next_pc = warp.PC + immsrc;
+#endif
+#ifdef GROUPS
+          next_pc = warp[wid].PC + immsrc;
+#endif
           curr_taken = true;
         }
         break;
@@ -617,7 +752,12 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       case 7: {
         // RV32I: BGEU
         if (rsdata[t][0].u >= rsdata[t][1].u) {
+#ifdef DEFAULT
           next_pc = warp.PC + immsrc;
+#endif
+#ifdef GROUPS
+          next_pc = warp[wid].PC + immsrc;
+#endif
           curr_taken = true;
         }
         break;
@@ -629,7 +769,12 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         all_taken = curr_taken;
       } else {
         if (all_taken != curr_taken) {
-          std::cout << "divergent branch! PC=0x" << std::hex << warp.PC << std::dec << " (#" << trace->uuid << ")\n" << std::flush;
+#ifdef DEFAULT
+          std::cout << "divergent branch! PC=0x" << std::hex << warp.PC << " (#" << std::dec << trace->uuid << ")\n" << std::flush;
+#endif
+#ifdef GROUPS
+          std::cout << "divergent branch! PC=0x" << std::hex << warp[wid].PC << " (#" << std::dec << trace->uuid << ")\n" << std::flush;
+#endif          
           std::abort();
         }
       }
@@ -642,11 +787,22 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->fu_type = FUType::ALU;
     trace->alu_type = AluType::BRANCH;
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       rddata[t].i = next_pc;
     }
+#ifdef DEFAULT
     next_pc = warp.PC + immsrc;
+#endif
+#ifdef GROUPS
+    next_pc = warp[wid].PC + immsrc;
+#endif
     trace->fetch_stall = true;
     rd_write = true;
     break;
@@ -657,8 +813,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->alu_type = AluType::BRANCH;
     trace->src_regs[0] = {RegType::Integer, rsrc0};
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       rddata[t].i = next_pc;
     }
     next_pc = rsdata[thread_last][0].i + immsrc;
@@ -679,8 +841,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       uint32_t data_bytes = 1 << (func3 & 0x3);
       uint32_t data_width = 8 * data_bytes;
       for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
         if (!warp.tmask.test(t))
           continue;
+#endif
+#ifdef GROUPS
+        if (!warp[wid].tmask.test(t))
+          continue;
+#endif
         uint64_t mem_addr = rsdata[t][0].i + immsrc;
         uint64_t read_data = 0;
         this->dcache_read(&read_data, mem_addr, data_bytes);
@@ -688,6 +856,11 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         switch (func3) {
         case 0: // RV32I: LB
         case 1: // RV32I: LH
+          rddata[t].i = sext((Word)read_data, data_width);
+          break;
+        case 2:
+          if (opcode == Opcode::L) {
+          // RV32I: LW
           rddata[t].i = sext((Word)read_data, data_width);
           break;
         case 2:
@@ -733,8 +906,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
      || (opcode == Opcode::FS && func3 == 3)) {
       uint32_t data_bytes = 1 << (func3 & 0x3);
       for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
         if (!warp.tmask.test(t))
           continue;
+#endif
+#ifdef GROUPS
+        if (!warp[wid].tmask.test(t))
+          continue;
+#endif
         uint64_t mem_addr = rsdata[t][0].i + immsrc;
         uint64_t write_data = rsdata[t][1].u64;
         trace_data->mem_addrs.at(t) = {mem_addr, data_bytes};
@@ -747,7 +926,6 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
           break;
         default:
           std::abort();
-        }
       }
     }
   #ifdef EXT_V_ENABLE
@@ -768,8 +946,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     uint32_t data_bytes = 1 << (func3 & 0x3);
     uint32_t data_width = 8 * data_bytes;
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       uint64_t mem_addr = rsdata[t][0].u;
       trace_data->mem_addrs.at(t) = {mem_addr, data_bytes};
       if (amo_type == 0x02) { // LR
@@ -833,8 +1017,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
   }
   case Opcode::SYS: {
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       uint32_t csr_addr = immsrc;
       Word csr_value;
       if (func3 == 0) {
@@ -857,9 +1047,8 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         }
       } else {
         trace->fu_type = FUType::SFU;
-        // stall the fetch stage for FPU CSRs
-        trace->fetch_stall = (csr_addr <= VX_CSR_FCSR);
-        csr_value = this->get_csr(csr_addr, t, wid);
+        trace->fetch_stall = true;
+        csr_value = this->get_csr(csr_addr, t,wid);
         switch (func3) {
         case 1: {
           // RV32I: CSRRW
@@ -936,8 +1125,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
   case Opcode::FCI: {
     trace->fu_type = FUType::FPU;
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       uint32_t frm = this->get_fpu_rm(func3, t, wid);
       uint32_t fflags = 0;
       switch (func7) {
@@ -1267,8 +1462,14 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
     trace->src_regs[1] = {RegType::Float, rsrc1};
     trace->src_regs[2] = {RegType::Float, rsrc2};
     for (uint32_t t = thread_start; t < num_threads; ++t) {
+#ifdef DEFAULT
       if (!warp.tmask.test(t))
         continue;
+#endif
+#ifdef GROUPS
+      if (!warp[wid].tmask.test(t))
+        continue;
+#endif
       uint32_t frm = this->get_fpu_rm(func3, t, wid);
       uint32_t fflags = 0;
       switch (opcode) {
@@ -1342,32 +1543,60 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         trace->sfu_type = SfuType::SPLIT;
         trace->src_regs[0] = {RegType::Integer, rsrc0};
         trace->fetch_stall = true;
-
+#ifdef DEFAULT
         auto stack_size = warp.ipdom_stack.size();
-
+#endif
+#ifdef GROUPS
+        auto stack_size = warp[wid].ipdom_stack.size();
+#endif
         ThreadMask then_tmask, else_tmask;
         auto not_pred = (rsrc1 != 0);
         for (uint32_t t = 0; t < num_threads; ++t) {
+#ifdef DEFAULT
           auto cond = (warp.ireg_file.at(t).at(rsrc0) & 0x1) ^ not_pred;
           then_tmask[t] = warp.tmask.test(t) && cond;
           else_tmask[t] = warp.tmask.test(t) && !cond;
+#endif
+#ifdef GROUPS
+          auto cond = (warp[wid + t/THREAD_PER_TILE].ireg_file.at(t%THREAD_PER_TILE).at(rsrc0) & 0x1) ^ not_pred;
+          then_tmask[t] = warp[wid].tmask.test(t) && cond;
+          else_tmask[t] = warp[wid].tmask.test(t) && !cond;
+#endif
         }
 
         bool is_divergent = then_tmask.any() && else_tmask.any();
         if (is_divergent) {
-          if (stack_size == ipdom_size_) {
-            std::cout << "IPDOM stack is full! size=" << stack_size << ", PC=0x" << std::hex << warp.PC << std::dec << " (#" << trace->uuid << ")\n" << std::flush;
+          if (stack_size == arch_.ipdom_size()) {
+#ifdef DEFAULT
+            std::cout << "IPDOM stack is full! size=" << std::dec << stack_size << ", PC=0x" << std::hex << warp.PC << " (#" << std::dec << trace->uuid << ")\n" << std::flush;
+#endif
+#ifdef GROUPS
+            std::cout << "IPDOM stack is full! size=" << std::dec << stack_size << ", PC=0x" << std::hex << warp[wid].PC << " (#" << std::dec << trace->uuid << ")\n" << std::flush;
+#endif           
             std::abort();
           }
-          // set new thread mask to the larger set
+          // set GROUPS thread mask to the larger set
           if (then_tmask.count() >= else_tmask.count()) {
             next_tmask = then_tmask;
           } else {
             next_tmask = else_tmask;
           }
-          // push reconvergence and not-taken thread mask onto the stack
+          // push reconvergence thread mask onto the stack
+#ifdef DEFAULT          
+          warp.ipdom_stack.emplace(warp.tmask);
+#endif
+#ifdef GROUPS
+          warp[wid].ipdom_stack.emplace(warp[wid].tmask);
+#endif          
+          // push not taken thread mask onto the stack
+#ifdef DEFAULT
           auto ntaken_tmask = ~next_tmask & warp.tmask;
-          warp.ipdom_stack.emplace(warp.tmask, ntaken_tmask, next_pc);
+          warp.ipdom_stack.emplace(ntaken_tmask, next_pc);
+#endif
+#ifdef GROUPS
+          auto ntaken_tmask = ~next_tmask & warp[wid].tmask;
+          warp[wid].ipdom_stack.emplace(ntaken_tmask, next_pc);
+#endif
         }
         // return divergent state
         for (uint32_t t = thread_start; t < num_threads; ++t) {
@@ -1381,7 +1610,7 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         trace->sfu_type = SfuType::JOIN;
         trace->src_regs[0] = {RegType::Integer, rsrc0};
         trace->fetch_stall = true;
-
+#ifdef DEFAULT
         auto stack_ptr = warp.ireg_file.at(thread_last).at(rsrc0);
         if (stack_ptr != warp.ipdom_stack.size()) {
           if (warp.ipdom_stack.empty()) {
@@ -1395,8 +1624,25 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
             next_tmask = warp.ipdom_stack.top().else_tmask;
             next_pc = warp.ipdom_stack.top().PC;
             warp.ipdom_stack.top().fallthrough = true;
+            DP(3, " next PC: " << std::hex << next_pc);
           }
         }
+#endif
+#ifdef GROUPS
+        auto stack_ptr = warp[wid + thread_last/THREAD_PER_TILE].ireg_file.at(thread_last%THREAD_PER_TILE).at(rsrc0);
+        if (stack_ptr != warp[wid].ipdom_stack.size()) {
+          if (warp[wid].ipdom_stack.empty()) {
+            std::cout << "IPDOM stack is empty!\n" << std::flush;
+            std::abort();
+          }
+          next_tmask = warp[wid].ipdom_stack.top().tmask;
+          if (!warp[wid].ipdom_stack.top().fallthrough) {
+            next_pc = warp[wid].ipdom_stack.top().PC;
+            DP(3, " next PC: " << std::hex << next_pc);
+          }
+          warp[wid].ipdom_stack.pop();
+        }
+#endif
       } break;
       case 4: {
         // BAR
@@ -1417,13 +1663,24 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         ThreadMask pred;
         auto not_pred = rdest & 0x1;
         for (uint32_t t = 0; t < num_threads; ++t) {
+#ifdef DEFAULT
           auto cond = (warp.ireg_file.at(t).at(rsrc0) & 0x1) ^ not_pred;
           pred[t] = warp.tmask.test(t) && cond;
+#endif
+#ifdef GROUPS
+          auto cond = (warp[wid + t/THREAD_PER_TILE].ireg_file.at(t%THREAD_PER_TILE).at(rsrc0) & 0x1) ^ not_pred;
+          pred[t] = warp[wid].tmask.test(t) && cond;
+#endif
         }
         if (pred.any()) {
           next_tmask &= pred;
         } else {
+#ifdef DEFAULT
           next_tmask = warp.ireg_file.at(thread_last).at(rsrc1);
+#endif
+#ifdef GROUPS
+          next_tmask = warp[wid + thread_last/THREAD_PER_TILE].ireg_file.at(thread_last%THREAD_PER_TILE).at(rsrc1);
+#endif
         }
       } break;
       default:
@@ -1621,12 +1878,25 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
         DPH(2, "Dest Reg: " << type << rdest << "={");
         for (uint32_t t = 0; t < num_threads; ++t) {
           if (t) DPN(2, ", ");
+#ifdef DEFAULT
           if (!warp.tmask.test(t)) {
             DPN(2, "-");
             continue;
           }
+#endif
+#ifdef GROUPS
+          if (!warp[wid].tmask.test(t)) {
+            DPN(2, "-");
+            continue;
+          }
+#endif
+#ifdef DEFAULT
           warp.ireg_file.at(t)[rdest] = rddata[t].i;
-          DPN(2, "0x" << std::hex << rddata[t].i << std::dec);
+#endif
+#ifdef GROUPS
+          warp[wid + t/THREAD_PER_TILE].ireg_file.at(t%THREAD_PER_TILE)[rdest] = rddata[t].i;
+#endif
+          DPN(2, "0x" << std::hex << rddata[t].i);
         }
         DPN(2, "}" << std::endl);
         trace->dst_reg = {type, rdest};
@@ -1640,12 +1910,25 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       DPH(2, "Dest Reg: " << type << rdest << "={");
       for (uint32_t t = 0; t < num_threads; ++t) {
         if (t) DPN(2, ", ");
+#ifdef DEFAULT
         if (!warp.tmask.test(t)) {
           DPN(2, "-");
           continue;
         }
+#endif
+#ifdef GROUPS
+        if (!warp[wid].tmask.test(t)) {
+          DPN(2, "-");
+          continue;
+        }
+#endif
+#ifdef DEFAULT
         warp.freg_file.at(t)[rdest] = rddata[t].u64;
-        DPN(2, "0x" << std::hex << rddata[t].f << std::dec);
+#endif
+#ifdef GROUPS
+        warp[wid + t/THREAD_PER_TILE].freg_file.at(t%THREAD_PER_TILE)[rdest] = rddata[t].u64;
+#endif
+        DPN(2, "0x" << std::hex << rddata[t].f);
       }
       DPN(2, "}" << std::endl);
       trace->dst_reg = {type, rdest};
@@ -1656,14 +1939,26 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       break;
     }
   }
-
+#ifdef DEFAULT
   warp.PC += 4;
-
+#endif
+#ifdef GROUPS
+  warp[wid].PC += 4;
+#endif
+#ifdef DEFAULT
   if (warp.PC != next_pc) {
     DP(3, "*** Next PC=0x" << std::hex << next_pc << std::dec);
     warp.PC = next_pc;
   }
-
+#endif
+#ifdef GROUPS
+  if (warp[wid].PC != next_pc) {
+    DP(3, "*** Next PC=0x" << std::hex << next_pc << std::dec);
+    warp[wid].PC = next_pc;
+  }
+  warp[0].PC = warp[wid].PC;
+#endif
+#ifdef DEFAULT
   if (warp.tmask != next_tmask) {
     DP(3, "*** New Tmask=" << ThreadMaskOS(next_tmask, num_threads));
     warp.tmask = next_tmask;
@@ -1671,4 +1966,17 @@ void Emulator::execute(const Instr &instr, uint32_t wid, instr_trace_t *trace) {
       active_warps_.reset(wid);
     }
   }
+#endif
+#ifdef GROUPS
+  if (warp[wid].tmask != next_tmask) {
+    DPH(3, "*** New Tmask=");
+    for (uint32_t i = 0; i < num_threads; ++i)
+      DPN(3, next_tmask.test(i));
+    DPN(3, std::endl);
+    warp[wid].tmask = next_tmask;
+    if (!next_tmask.any()) {
+      active_warps_.reset(wid);
+    }
+  }
+#endif
 }

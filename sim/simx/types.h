@@ -57,6 +57,13 @@ typedef std::bitset<MAX_NUM_REGS>    RegMask;
 typedef std::bitset<MAX_NUM_THREADS> ThreadMask;
 typedef std::bitset<MAX_NUM_WARPS>   WarpMask;
 
+// Cooperative Groups /////////////////////////////////////////////////////////
+
+#define THREAD_PER_TILE     4
+#define WARP_SIZE           32
+#define MAX_NUMBER_TILES    8
+#define BITS_MAX_TILES      3
+
 ///////////////////////////////////////////////////////////////////////////////
 
 class ThreadMaskOS {
@@ -129,7 +136,9 @@ enum class AluType {
   BRANCH,
   SYSCALL,
   IMUL,
-  IDIV
+  IDIV,
+  VOTE,
+  SHFL
 };
 
 inline std::ostream &operator<<(std::ostream &os, const AluType& type) {
@@ -139,6 +148,8 @@ inline std::ostream &operator<<(std::ostream &os, const AluType& type) {
   case AluType::SYSCALL: os << "SYSCALL"; break;
   case AluType::IMUL:    os << "IMUL"; break;
   case AluType::IDIV:    os << "IDIV"; break;
+  case AluType::SHFL:    os << "SHFL"; break;
+  case AluType::VOTE:    os << "VOTE"; break;
   default: assert(false);
   }
   return os;
@@ -248,7 +259,9 @@ enum class SfuType {
   PRED,
   CSRRW,
   CSRRS,
-  CSRRC
+  CSRRC,
+  CMOV,
+  TILE
 };
 
 inline std::ostream &operator<<(std::ostream &os, const SfuType& type) {
@@ -262,6 +275,7 @@ inline std::ostream &operator<<(std::ostream &os, const SfuType& type) {
   case SfuType::CSRRW:  os << "CSRRW"; break;
   case SfuType::CSRRS:  os << "CSRRS"; break;
   case SfuType::CSRRC:  os << "CSRRC"; break;
+  case SfuType::TILE:  os << "TILE"; break;
   default: assert(false);
   }
   return os;

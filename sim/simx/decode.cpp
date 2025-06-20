@@ -49,10 +49,39 @@ static const std::unordered_map<Opcode, InstType> sc_instTable = {
   {Opcode::FMNMSUB, InstType::R4},
   {Opcode::VSET,    InstType::V},
   {Opcode::EXT1,    InstType::R},
-  {Opcode::EXT2,    InstType::R4},
+  // {Opcode::EXT2,    InstType::R4},
   {Opcode::R_W,     InstType::R},
   {Opcode::I_W,     InstType::I},
-  {Opcode::TCU,     InstType::I},
+  {Opcode::VOTE,     InstType::I},
+  {Opcode::SHFL,     InstType::I},
+  {Opcode::TILE,     InstType::R},
+};
+
+enum Constants {
+  width_opcode= 7,
+  width_reg   = 5,
+  width_func2 = 2,
+  width_func3 = 3,
+  width_func7 = 7,
+  width_i_imm = 12,
+  width_j_imm = 20,
+
+  shift_opcode= 0,
+  shift_rd    = width_opcode,
+  shift_func3 = shift_rd + width_reg,
+  shift_rs1   = shift_func3 + width_func3,
+  shift_rs2   = shift_rs1 + width_reg,
+  shift_func2 = shift_rs2 + width_reg,
+  shift_func7 = shift_rs2 + width_reg,
+  shift_rs3   = shift_func7 + width_func2,
+
+  mask_opcode = (1 << width_opcode) - 1,
+  mask_reg    = (1 << width_reg)   - 1,
+  mask_func2  = (1 << width_func2) - 1,
+  mask_func3  = (1 << width_func3) - 1,
+  mask_func7  = (1 << width_func7) - 1,
+  mask_i_imm  = (1 << width_i_imm) - 1,
+  mask_j_imm  = (1 << width_j_imm) - 1,
 };
 
 static const char* op_string(const Instr &instr) {
@@ -63,7 +92,6 @@ static const char* op_string(const Instr &instr) {
   auto rd     = instr.getRDest();
   auto rs1    = instr.getRSrc(1);
   auto imm    = instr.getImm();
-
   switch (opcode) {
   case Opcode::LUI:   return "LUI";
   case Opcode::AUIPC: return "AUIPC";
@@ -390,16 +418,9 @@ static const char* op_string(const Instr &instr) {
     default:
       std::abort();
     }
-
-  case Opcode::TCU:
-    switch(func3)
-    {
-      case 0: return "ML";     // Matrix Load
-      case 1: return "MS";     // Matrix Store
-      case 2: return "MATMUL"; // Matrix Multiply
-      default:
-        std::abort();
-    }
+  case Opcode::VOTE:   return "VOTE";
+  case Opcode::SHFL:   return "SHFL";
+  case Opcode::TILE:   return "TILE";
   default:
     std::abort();
   }
@@ -580,6 +601,11 @@ std::shared_ptr<Instr> Emulator::decode(uint32_t code) const {
         std::abort();
       }
       break;
+    case Opcode::TILE:{
+      instr->addSrcReg(rs1, RegType::Integer);
+      instr->addSrcReg(rs2, RegType::Integer);
+      break;
+    }
     default:
       instr->setDestReg(rd, RegType::Integer);
       instr->addSrcReg(rs1, RegType::Integer);
@@ -651,6 +677,28 @@ std::shared_ptr<Instr> Emulator::decode(uint32_t code) const {
         instr->setImm(code >> shift_rs2);
       }
       break;
+    case Opcode::VOTE:{
+      instr->setFunc3(func3);
+      instr->setDestReg(rd, RegType::Integer);
+      instr->addSrcReg(rs1, RegType::Integer);
+      auto imm = code >> shift_rs2;
+      uint32_t address = imm & 0xfff;
+      instr->addSrcReg(address, RegType::Integer);
+      instr->setImm(sext(imm, width_i_imm));
+      break;
+    }
+    case Opcode::SHFL:{
+      instr->setFunc3(func3);
+      instr->setDestReg(rd, RegType::Integer);
+      instr->addSrcReg(rs1, RegType::Integer);
+      auto imm = code >> shift_rs2;
+      uint32_t address = imm & 0x01f;
+      instr->addSrcReg(address, RegType::Integer);
+      uint32_t c_add = ((imm & 0xc00) >> 10) + address;
+      instr->addSrcReg(c_add, RegType::Integer);
+      instr->setImm(sext(imm, width_i_imm));
+      break;
+    }
     default:
       std::abort();
       break;

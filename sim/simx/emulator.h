@@ -55,6 +55,8 @@ public:
 
   bool wspawn(uint32_t num_warps, Word nextPC);
 
+  bool tileMask(uint32_t tile_mask, uint32_t thread_count);
+
   int get_exitcode() const;
 
   Word get_tiles();
@@ -118,6 +120,8 @@ private:
     Word                              vlmax;
 #endif
     uint32_t                          uuid;
+    uint32_t                          num_tThreads;
+    bool                              isActive;
   };
 
   struct wspawn_t {

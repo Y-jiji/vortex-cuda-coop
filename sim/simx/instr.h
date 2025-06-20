@@ -45,10 +45,11 @@ enum class Opcode {
   // Vector Extension
   VSET      = 0x57,
   // Custom Extensions
-  EXT1      = 0x0b,
-  EXT2      = 0x2b,
-  EXT3      = 0x5b,
-  TCU       = 0x7b
+  TCU       = 0x0b,
+  // CUDA Vote Extension
+  VOTE      = 0x2b,
+  SHFL      = 0x5b,
+  TILE      = 0x7b
 };
 
 enum class InstType {

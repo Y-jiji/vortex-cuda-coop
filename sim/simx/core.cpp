@@ -212,7 +212,6 @@ void Core::schedule() {
 
 void Core::fetch() {
   perf_stats_.ifetch_latency += pending_ifetches_;
-
   // handle icache response
   auto& icache_rsp_port = icache_rsp_ports.at(0);
   if (!icache_rsp_port.empty()){
@@ -243,6 +242,7 @@ void Core::fetch() {
 }
 
 void Core::decode() {
+
   if (decode_latch_.empty())
     return;
 
@@ -427,6 +427,10 @@ bool Core::barrier(uint32_t bar_id, uint32_t count, uint32_t wid) {
 
 bool Core::wspawn(uint32_t num_warps, Word nextPC) {
   return emulator_.wspawn(num_warps, nextPC);
+}
+
+bool Core::tileMask(uint32_t tile_mask, uint32_t thread_count){
+  return emulator_.tileMask(tile_mask, thread_count);
 }
 
 void Core::attach_ram(RAM* ram) {

@@ -23,6 +23,9 @@
 #include "cache_sim.h"
 #include "VX_types.h"
 
+#define GROUPS
+// #define DEFAULT
+
 using namespace vortex;
 
 AluUnit::AluUnit(const SimContext& ctx, Core* core) : FuncUnit(ctx, core, "alu-unit") {}
@@ -46,6 +49,10 @@ void AluUnit::tick() {
 			break;
 		case AluType::IDIV:
 			output.push(trace, XLEN+delay);
+			break;
+		case AluType::VOTE: 
+		case AluType::SHFL:
+			output.push(trace, 1);
 			break;
 		default:
 			std::abort();
@@ -351,15 +358,38 @@ void SfuUnit::tick() {
 			output.push(trace, 2+delay);
 			if (trace->eop) {
 				auto trace_data = std::dynamic_pointer_cast<SFUTraceData>(trace->data);
+#ifdef DEFAULT
 				release_warp = core_->barrier(trace_data->arg1, trace_data->arg2, trace->wid);
+#endif
+
+#ifdef GROUPS
+				std::bitset<32> mask = trace_data->arg2;
+				int count = mask.count();
+DT(1, "MASK, COUNT" << mask << ", " << count<< "," <<MAX_NUMBER_TILES - 1 - 4);
+				for (size_t warp_id = 0, nw = MAX_NUMBER_TILES; warp_id < nw; ++warp_id) {
+					if(mask.test(MAX_NUMBER_TILES - 1 - warp_id))
+						release_warp &= core_->barrier(trace_data->arg1, count, warp_id);
+				}
+#endif
 			}
 		} break;
+		case SfuType::TILE:{
+			output.push(trace, 1);
+			if (trace->eop) {
+				auto trace_data = std::dynamic_pointer_cast<SFUTraceData>(trace->data);
+				auto tile_mask = trace_data->arg1;
+				auto thread_count = trace_data->arg2;
+				release_warp = core_->tileMask(tile_mask, thread_count);
+			}
+		}
+		break;
 		default:
 			std::abort();
 		}
 
 		DT(3, this->name() << ": op=" << trace->sfu_type << ", " << *trace);
 		if (trace->eop && release_warp)  {
+			DT(3, "pipeline-ssfdsdssdsd: op=" << trace->sfu_type << ", " << *trace);
 			core_->resume(trace->wid);
 		}
 
